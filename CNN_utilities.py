@@ -109,7 +109,7 @@ class CustomDataset(Dataset):
         if self.transform:
             image = self.transform(image)
         
-        return image, positions, probabilities
+        return image, positions, probabilities, image_name
 
 
 # ==============================
@@ -126,6 +126,9 @@ def custom_collate(batch):
     # Keep positions and probabilities as tensor lists
     positions = [item[1] for item in batch]
     probabilities = [item[2] for item in batch]
+
+    # Extract image names ✅
+    image_names = [item[3] for item in batch]  
     
     # Apply padding to positions and probabilities
     # Sequences are padded to have the same length (batch_first=True, so that it doesn't invert the dimensions of the tensor)
@@ -139,7 +142,7 @@ def custom_collate(batch):
     probabilities_mask = (padded_probabilities.sum(dim=-1) != 0).float()  # Mask to ignore padded probabilities
 
 
-    return images, padded_positions, padded_probabilities, positions_mask, probabilities_mask
+    return images, padded_positions, padded_probabilities, positions_mask, probabilities_mask, image_names
 
 
 
@@ -147,7 +150,7 @@ def custom_collate(batch):
 # 3️ Definition of the CNN Model
 # ==============================
 class CNN(nn.Module):
-    def __init__(self, num_classes, num_coordinates):
+    def __init__(self, num_classes, num_coordinates, max_total_disl=100):
         super(CNN, self).__init__()
         
         
@@ -158,44 +161,95 @@ class CNN(nn.Module):
         self.conv2 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=5, padding=2)
         self.conv3 = nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, padding=1)
         self.conv4 = nn.Conv2d(in_channels=256, out_channels=512, kernel_size=2, padding=1)
+
+        #self.conv1 = nn.Conv2d(3, 16, kernel_size=7, padding=3)
+        #self.conv2 = nn.Conv2d(16, 32, kernel_size=7, padding=3)
+        #self.conv3 = nn.Conv2d(32, 64, kernel_size=7, padding=3)
+        #self.conv4 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        #self.conv5 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
+        #self.conv6 = nn.Conv2d(256, 512, kernel_size=3, padding=1)
+        #self.conv7 = nn.Conv2d(512, 1024, kernel_size=2, padding=1)
+
+        self.bn1 = nn.BatchNorm2d(64)  # BatchNorm after conv
+        self.bn2 = nn.BatchNorm2d(128)
+        self.bn3 = nn.BatchNorm2d(256) 
+        self.bn4 = nn.BatchNorm2d(512)
+
+        #self.bn1 = nn.BatchNorm2d(16)
+        #self.bn2 = nn.BatchNorm2d(32)
+        #self.bn3 = nn.BatchNorm2d(64)
+        #self.bn4 = nn.BatchNorm2d(128)
+        #self.bn5 = nn.BatchNorm2d(256)
+        #self.bn6 = nn.BatchNorm2d(512)
+        #self.bn7 = nn.BatchNorm2d(1024)
+        
         
         # Activation layer
         self.relu = nn.ReLU()
+
+        # Dropout at 30%
+        #self.dropout = nn.Dropout(0.3)  
         
         # Pooling layer
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
+        # Fully connected layers
+        flattened_size = 512 * 3 * 3  # Size after convolutions
+
+        #print(f"max_dislocations_in_batch: {self.max_dislocations_in_batch}")
+
+        # Classification output variable (num_classes = 2 (p0, p1), for each dislocation) 
+        self.classification_head = nn.Linear(flattened_size, max_total_disl * self.num_classes)  
+
+        # Regression output variable (num_coordinates = 2 (x, y), for each dislocation)
+        self.regression_head = nn.Linear(flattened_size, max_total_disl * self.num_coordinates)  # output = torch.tensor([[x1_1, y1_1, x2_1, y2_1, x3_1, y3_1]])  # 1 image, 3 dislocations, 2 coordinates (x, y) per dislocation
+
+
 
         
     def forward(self, x, padded_positions):
+
         x = self.pool(self.relu(self.conv1(x)))
         x = self.pool(self.relu(self.conv2(x)))
         x = self.pool(self.relu(self.conv3(x)))
         x = self.relu(self.conv4(x))
+        
+        
+        #x = self.dropout(self.pool(self.relu(self.bn1(self.conv1(x)))))
+        #x = self.dropout(self.pool(self.relu(self.bn2(self.conv2(x)))))
+        #x = self.dropout(self.pool(self.relu(self.bn3(self.conv3(x)))))
+        #x = self.dropout(self.relu(self.bn4(self.conv4(x))))
+
+        #x = self.pool(self.relu(self.bn1(self.conv1(x))))
+        #x = self.pool(self.relu(self.bn2(self.conv2(x))))
+        #x = self.pool(self.relu(self.bn3(self.conv3(x))))
+        #x = self.pool(self.relu(self.bn4(self.conv4(x))))
+        #x = self.pool(self.relu(self.bn5(self.conv5(x))))
+        #x = self.pool(self.relu(self.bn6(self.conv6(x))))
+        #x = self.relu(self.bn7(self.conv7(x)))
+        
+        
 
         x = x.view(x.size(0), -1)  # Flatten
-        
-        # Fully connected layers
-        flattened_size = 512 * 3 * 3  # Size after convolutions
 
+        #print(x.shape)
+        
         # Update max_dislocations_in_batch during forward passage
-        self.max_dislocations_in_batch = padded_positions.size(1)  # Dynamic calculation based on each batch in the drive loop
+        max_dislocations_in_batch = padded_positions.size(1)  # Dynamic calculation based on each batch in the drive loop
+
+        # Classification output 
+        classification_logits = self.classification_head(x) #  Utilisé pour le loss  
         
-        #print(f"max_dislocations_in_batch: {self.max_dislocations_in_batch}")
+        #Adapt the size to max_dislocations_in_batch (Batch, max_dislocations, 2)
+        classification_logits = classification_logits[:, :max_dislocations_in_batch * self.num_classes].view(-1, max_dislocations_in_batch, self.num_classes)
 
-        # Classification output variable (num_classes = 2 (p0, p1), for each dislocation) 
-        self.classification_head = nn.Linear(flattened_size, self.max_dislocations_in_batch * self.num_classes)  
-
-        # Regression output variable (num_coordinates = 2 (x, y), for each dislocation)
-        self.regression_head = nn.Linear(flattened_size, self.max_dislocations_in_batch * self.num_coordinates)  # output = torch.tensor([[x1_1, y1_1, x2_1, y2_1, x3_1, y3_1]])  # 1 image, 3 dislocations, 2 coordinates (x, y) per dislocation
-
-        # Classification output (Batch, max_dislocations, 2)
-        classification_logits = self.classification_head(x).view(-1, self.max_dislocations_in_batch, self.num_classes) #  Utilisé pour le loss  
-        
         #classification_probs = F.softmax(classification_logits, dim=-1)  # Convertir en probabilités (juste pour l'affichage), mais pas utilisé pour le loss car nn.CrossEntropyLoss utilise déjà le softmax (il faut utiliser celui avec logit)
 
-        # Regression output (Batch, max_dislocations, 2)
-        regression_output = self.regression_head(x).view(-1, self.max_dislocations_in_batch, self.num_coordinates) # output = torch.tensor([[x1_1, y1_1], [x2_1, y2_1], [x3_1, y3_1]])  # 1 image, 3 dislocations, 2 coordonnées (x, y) par dislocation
+        # Regression output 
+        regression_output = self.regression_head(x) 
+
+        #Adapt the size to max_dislocations_in_batch (Batch, max_dislocations, 2)
+        regression_output = regression_output[:, :max_dislocations_in_batch * self.num_coordinates].view(-1, max_dislocations_in_batch, self.num_coordinates) # output = torch.tensor([[x1_1, y1_1], [x2_1, y2_1], [x3_1, y3_1]])  # 1 image, 3 dislocations, 2 coordonnées (x, y) par dislocation
   
 
         return classification_logits, regression_output
@@ -206,7 +260,7 @@ class CNN(nn.Module):
 # ==============================
 # 4 Training function
 # ==============================
-def train_model(model, train_loader, val_loader, criterion_classification, criterion_regression, optimizer, device, num_epochs, scheduler=None):
+def train_model(model, train_loader, val_loader, criterion_classification, criterion_regression, optimizer, device, num_epochs, alpha, beta, save_dir_model, scheduler=None):
     """
     Model training function with validation every 2 epochs.
 
@@ -242,6 +296,9 @@ def train_model(model, train_loader, val_loader, criterion_classification, crite
         "val_accuracy_total": [],
     }
 
+    best_val_loss = float("inf")  # Track the best validation loss
+
+
     for epoch in range(num_epochs):
         model.train()  # Training mode
         
@@ -252,7 +309,7 @@ def train_model(model, train_loader, val_loader, criterion_classification, crite
         correct_regression = 0
         total = 0
 
-        for images, padded_positions, padded_probabilities, positions_mask, probabilities_mask in train_loader:
+        for images, padded_positions, padded_probabilities, positions_mask, probabilities_mask, _ in train_loader:
             # Sending data to the GPU/CPU
             images = images.to(device)
             padded_positions = padded_positions.to(device)
@@ -266,7 +323,7 @@ def train_model(model, train_loader, val_loader, criterion_classification, crite
             classification_logits, regression_output = model(images, padded_positions)
 
             # Flatten logits : [batch_size * max_dislocations, num_classes]
-            classification_logits = classification_logits.view(-1, 2)  
+            classification_logits = classification_logits.reshape(-1, 2)  
             
             # Transform padded_probabilities into class indices and flatten targets : [batch_size * max_dislocations]
             target_classes = padded_probabilities.argmax(dim=-1).view(-1)
@@ -284,7 +341,7 @@ def train_model(model, train_loader, val_loader, criterion_classification, crite
             loss_classification = loss_classification.sum() / probabilities_mask.sum()
 
             # Sum of loss
-            total_loss = loss_classification + loss_regression
+            total_loss = beta * loss_classification + alpha * loss_regression
 
             # Backpropagation and weight updating
             total_loss.backward()
@@ -300,9 +357,24 @@ def train_model(model, train_loader, val_loader, criterion_classification, crite
             correct_classification += (predicted_classes == target_classes).sum().item()
 
             # Calculation of regression accuracy (eg: distance < seuil)
-            correct_regression += (torch.abs(regression_output - padded_positions) < 0.1).sum().item()
+            correct_regression += (torch.abs(regression_output - padded_positions) <= 1).sum().item()
 
             total += target_classes.size(0)
+
+        # Dynamic adjustment of alpha and beta weights after each epoch
+        with torch.no_grad():
+            class_loss = running_loss_classification / len(train_loader)
+            regress_loss = running_loss_regression / len(train_loader)
+
+            if regress_loss > class_loss and class_loss != 0:
+                alpha = 1.0  # Keep alpha stable
+                beta = regress_loss / class_loss  # Increase the weight beta of the classification
+            elif class_loss > regress_loss and  regress_loss != 0:  
+                alpha = class_loss / regress_loss  # Increase the weight of regression
+                beta = 1.0  # Keep beta stable
+            else:
+                alpha = 1.0  # Valeur par défaut si l'une des pertes est 0
+                beta = 1.0  
 
         if (epoch + 1) % 2 == 0:
             # Average losses and accuracies for the entire train_loader
@@ -317,13 +389,14 @@ def train_model(model, train_loader, val_loader, criterion_classification, crite
             # Display training stats
             print(f"Époque {epoch + 1}/{num_epochs} \n "
                 f"  ###### TRAIN ##### \n"
-                f"Perte classification: {metrics['train_loss_classification'][-1]:.4f} \n "
-                f"Perte régression: {metrics['train_loss_regression'][-1]:.4f} \n "
-                f"Perte totale: {metrics['train_loss_total'][-1]:.4f} \n "
-                f"Précision classification: {metrics['train_accuracy_classification'][-1]:.2f}% \n "
-                f"Précision régression: {metrics['train_accuracy_regression'][-1]:.2f}% \n "
-                f"Précision totale: {metrics['train_accuracy_total'][-1]:.2f}%")
-
+                f"Loss classification: {metrics['train_loss_classification'][-1]:.4f} \n "
+                f"Loss regression: {metrics['train_loss_regression'][-1]:.4f} \n "
+                f"Total loss: {metrics['train_loss_total'][-1]:.4f} \n "
+                f"Accuracy classification: {metrics['train_accuracy_classification'][-1]:.2f}% \n "
+                f"Accuracy regression: {metrics['train_accuracy_regression'][-1]:.2f}% \n "
+                f"Total accuracy: {metrics['train_accuracy_total'][-1]:.2f}%")
+            
+            
         # Apply scheduler if defined
         if scheduler:
             scheduler.step()
@@ -333,26 +406,39 @@ def train_model(model, train_loader, val_loader, criterion_classification, crite
         # ==============================
 
         if (epoch + 1) % 2 == 0:
-            val_metrics = validate_model(model, val_loader, criterion_classification, criterion_regression, device)
+            val_metrics = validate_model(model, val_loader, criterion_classification, criterion_regression, device, alpha, beta)
             for key in val_metrics:
                 metrics[key].append(val_metrics[key])
 
-            print(f"  ###### VALIDATION ##### \n"
-                  f"Perte classification: {metrics['val_loss_classification'][-1]:.4f} \n"
-                  f"Perte régression: {metrics['val_loss_regression'][-1]:.4f} \n"
-                  f"Perte totale: {metrics['val_loss_total'][-1]:.4f} \n"
-                  f"Précision classification: {metrics['val_accuracy_classification'][-1]:.2f}% \n"
-                  f"Précision régression: {metrics['val_accuracy_regression'][-1]:.2f}% \n"
-                  f"Précision totale: {metrics['val_accuracy_total'][-1]:.2f}%")
+            #print(alpha, beta)
 
-    return metrics
+            print(f"  ###### VALIDATION ##### \n"
+                  f"Loss classification: {metrics['val_loss_classification'][-1]:.4f} \n"
+                  f"Loss regression: {metrics['val_loss_regression'][-1]:.4f} \n"
+                  f"Total loss: {metrics['val_loss_total'][-1]:.4f} \n"
+                  f"Accuracy classification: {metrics['val_accuracy_classification'][-1]:.2f}% \n"
+                  f"Accuracy regression: {metrics['val_accuracy_regression'][-1]:.2f}% \n"
+                  f"Total Accuracy: {metrics['val_accuracy_total'][-1]:.2f}%")
+            
+            # Save the model if validation loss improves
+            os.makedirs(save_dir_model, exist_ok=True)  # Creates the folder if it does not exist
+            save_path_best_model = os.path.join(save_dir_model, "Best_Model_CNN.pth")
+   
+            if metrics["val_loss_total"][-1] < best_val_loss:
+                best_val_loss = metrics["val_loss_total"][-1]
+                torch.save(model.state_dict(), save_path_best_model)
+                print(f"Best model saved with Val Loss: {best_val_loss:.4f}")
+
+        
+
+    return metrics, alpha, beta
 
 
 
 # ==============================
 # 5 Validation function
 # ==============================
-def validate_model(model, val_loader, criterion_classification, criterion_regression, device):
+def validate_model(model, val_loader, criterion_classification, criterion_regression, device, alpha, beta):
     """
     Model validation function.
 
@@ -368,7 +454,7 @@ def validate_model(model, val_loader, criterion_classification, criterion_regres
     total = 0
 
     with torch.no_grad(): # Disable gradient calculation during validation
-        for images, padded_positions, padded_probabilities, positions_mask, probabilities_mask in val_loader:
+        for images, padded_positions, padded_probabilities, positions_mask, probabilities_mask, _ in val_loader:
             images = images.to(device)
             padded_positions = padded_positions.to(device)
             padded_probabilities = padded_probabilities.to(device)
@@ -377,7 +463,7 @@ def validate_model(model, val_loader, criterion_classification, criterion_regres
 
             classification_logits, regression_output = model(images, padded_positions)
 
-            classification_logits = classification_logits.view(-1, 2)
+            classification_logits = classification_logits.reshape(-1, 2)
             target_classes = padded_probabilities.argmax(dim=-1).view(-1)
 
             loss_classification = criterion_classification(classification_logits, target_classes)
@@ -389,7 +475,7 @@ def validate_model(model, val_loader, criterion_classification, criterion_regres
             loss_regression = loss_regression.sum() / (2*positions_mask.sum())
             loss_classification = loss_classification.sum() / probabilities_mask.sum()
 
-            total_loss = loss_classification + loss_regression
+            total_loss = beta * loss_classification + alpha * loss_regression
 
             val_loss_classification += loss_classification.item()
             val_loss_regression += loss_regression.item()
@@ -397,7 +483,7 @@ def validate_model(model, val_loader, criterion_classification, criterion_regres
 
             _, predicted_classes = torch.max(classification_logits, 1)
             correct_classification += (predicted_classes == target_classes).sum().item()
-            correct_regression += (torch.abs(regression_output - padded_positions) < 0.1).sum().item()
+            correct_regression += (torch.abs(regression_output - padded_positions) <= 1).sum().item()
 
             total += target_classes.size(0)
 
@@ -512,7 +598,7 @@ def plot_loss_accuracy(metrics, save_dir):
 # ==============================
 # 7 Test function
 # ==============================
-def test_model(model, test_loader, criterion_classification, criterion_regression, device, save_dir_prediction_true, scaler_path):
+def test_model(model, test_loader, criterion_classification, criterion_regression, device, save_dir_prediction_true, scaler_path, alpha_f, beta_f):
     model.eval()  # Evaluation mode
     test_loss_classification = 0.0
     test_loss_regression = 0.0
@@ -527,7 +613,7 @@ def test_model(model, test_loader, criterion_classification, criterion_regressio
     scaler = joblib.load(scaler_path)
 
     with torch.no_grad():  # Disable gradient calculation during testing
-        for images, padded_positions, padded_probabilities, positions_mask, probabilities_mask in test_loader:
+        for images, padded_positions, padded_probabilities, positions_mask, probabilities_mask, image_names in test_loader:
             
             images = images.to(device)
             padded_positions = padded_positions.to(device)
@@ -542,7 +628,7 @@ def test_model(model, test_loader, criterion_classification, criterion_regressio
             classification_probs = F.softmax(classification_logits, dim=-1)
 
             # Calculation of loss for classification
-            classification_logits = classification_logits.view(-1, 2)
+            classification_logits = classification_logits.reshape(-1, 2)
             target_classes = padded_probabilities.argmax(dim=-1).view(-1)
             loss_classification = criterion_classification(classification_logits, target_classes)
 
@@ -558,7 +644,7 @@ def test_model(model, test_loader, criterion_classification, criterion_regressio
             loss_classification = loss_classification.sum() / probabilities_mask.sum()
 
             # Total loss
-            total_loss = loss_classification + loss_regression
+            total_loss = beta_f * loss_classification + alpha_f * loss_regression
 
 
             test_loss_classification += loss_classification.item()
@@ -567,7 +653,7 @@ def test_model(model, test_loader, criterion_classification, criterion_regressio
 
             _, predicted_classes = torch.max(classification_logits, 1)
             correct_classification += (predicted_classes == target_classes).sum().item()
-            correct_regression += (torch.abs(regression_output - padded_positions) < 0.1).sum().item()
+            correct_regression += (torch.abs(regression_output - padded_positions) <= 1).sum().item()
 
             total += target_classes.size(0)
 
@@ -587,6 +673,7 @@ def test_model(model, test_loader, criterion_classification, criterion_regressio
             # Save results for each batch item
             for i in range(len(true_positions_real)):
                 predictions_true_list.append({
+                    "Image": image_names[i],
                     "Positions": {
                         "True":true_positions_real[i].tolist(),
                         "Predicted": predicted_positions_real[i].tolist()
@@ -613,12 +700,14 @@ def test_model(model, test_loader, criterion_classification, criterion_regressio
     #Save loss and accuracies for test
      
     Loss_accuracies = {
-        "Perte de classification" : f"{test_loss_classification / len(test_loader):.4f}",
-        "Perte de régression" : f"{test_loss_regression / len(test_loader):.4f}",
-        "Perte totale" : f"{test_loss_total / len(test_loader):.4f}",
-        "Précision classification" : f"{100 * correct_classification / total:.2f}%",
-        "Précision régression" : f"{100 * correct_regression / (total * regression_output.shape[-1]):.2f}%",
-        "Précision totale" : f"{(100 * correct_classification / total + 100 * correct_regression / (total * regression_output.shape[-1])) / 2:.2f}%"
+        "alpha " : alpha_f, 
+        "beta " : beta_f,
+        "Loss classification" : test_loss_classification / len(test_loader),
+        "Loss regression" : test_loss_regression / len(test_loader),
+        "Total loss" : test_loss_total / len(test_loader),
+        "Classification accuracie in %" : 100 * correct_classification / total,
+        "Regression accuracie in %" : 100 * correct_regression / (total * regression_output.shape[-1]),
+        "Total accuracie in %" : (100 * correct_classification / total + 100 * correct_regression / (total * regression_output.shape[-1])) / 2
     } 
      
     file_loss_accuracies = os.path.join(save_dir_prediction_true, 'Test_loss_accuracies.json')    
@@ -630,12 +719,12 @@ def test_model(model, test_loader, criterion_classification, criterion_regressio
     
     # Display results
     print(f"###### TEST ######\n")
-    print(f"Perte de classification : {test_loss_classification / len(test_loader):.4f}\n")
-    print(f"Perte de régression : {test_loss_regression / len(test_loader):.4f}\n")
-    print(f"Perte totale : {test_loss_total / len(test_loader):.4f}\n")
-    print(f"Précision classification : {100 * correct_classification / total:.2f}%\n")
-    print(f"Précision régression : {100 * correct_regression / (total * regression_output.shape[-1]):.2f}%\n")
-    print(f"Précision totale : {(100 * correct_classification / total + 100 * correct_regression / (total * regression_output.shape[-1])) / 2:.2f}%")
+    print(f"Loss classification : {test_loss_classification / len(test_loader):.4f}\n")
+    print(f"Loss regression : {test_loss_regression / len(test_loader):.4f}\n")
+    print(f"Total loss : {test_loss_total / len(test_loader):.4f}\n")
+    print(f"Accuracy classification : {100 * correct_classification / total:.2f}%\n")
+    print(f"Accuracy regression : {100 * correct_regression / (total * regression_output.shape[-1]):.2f}%\n")
+    print(f"Total accuracy : {(100 * correct_classification / total + 100 * correct_regression / (total * regression_output.shape[-1])) / 2:.2f}%")
 
     return {
         "test_loss_classification": test_loss_classification / len(test_loader),
