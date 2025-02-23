@@ -16,10 +16,10 @@ from torchvision import transforms
 from torch.utils.data import DataLoader, random_split
 import os
 from datetime import datetime
-from torch.optim.lr_scheduler import StepLR
+from torch.optim.lr_scheduler import OneCycleLR
 from CNN_utilities import CustomDataset, custom_collate, CNN
 from CNN_utilities import train_model, plot_loss_accuracy, test_model
-
+from torch_lr_finder import LRFinder
 
 
 
@@ -37,9 +37,10 @@ print(device)
 # ==============================
 # 1️ Hyperparamètres
 # ==============================
-batch_size = 32            # Number of images per batch
-learning_rate = 0.00001    #Learning rate
-num_epochs = 2 #120           # Number of epochs
+batch_size = 32            # 16 32 64 Number of images per batch
+learning_rate = 1e-5       # Learning rate
+weight_decay = 1e-3        # L2 regularisation 
+num_epochs =  120            # Number of epochs
 
 
 # ==============================
@@ -73,9 +74,9 @@ test_size = len(dataset) - train_size - val_size  # The rest for the test
 
 train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
 
-train_loader = DataLoader(train_dataset, batch_size=batch_size, collate_fn=custom_collate, num_workers=4, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=batch_size, collate_fn=custom_collate, num_workers=4, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, collate_fn=custom_collate, num_workers=4, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, collate_fn=custom_collate, num_workers=0, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, collate_fn=custom_collate, num_workers=0, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, collate_fn=custom_collate, num_workers=0, shuffle=False)
 
 print(len(train_loader))
 print(len(val_loader))
@@ -138,11 +139,11 @@ model = CNN(num_classes, num_coordinates).to(device)
 
 criterion_classification = nn.CrossEntropyLoss(reduction='none') # Loss function for classification
 criterion_regression = nn.SmoothL1Loss(reduction='none')         # Loss function for regression
-optimizer = optim.Adam(model.parameters(), lr=learning_rate)     # Oprimizer for updating parameters (weights)
+optimizer = optim.Adam(model.parameters(), lr=learning_rate)#, weight_decay=weight_decay)     # Oprimizer for updating parameters (weights)
 
-# Scheduler : if used, reduces learning rate by 10% every 10 epochs
-scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
-
+# Scheduler : if used, reduces learning rate 
+steps_per_epoch = len(train_loader)
+scheduler = OneCycleLR(optimizer, max_lr=0.01, steps_per_epoch=steps_per_epoch, epochs=num_epochs)
 
 
 
@@ -150,18 +151,28 @@ scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
 # 6 Training and Validation
 # ==============================
 
+# Fitting parameters based on classification and regression loss
+alpha = 1.0
+beta = 1.0
+
+# Define the folder directory for saving the best model
+save_dir_model = r"C:\Users\p09276\Post_doc_Yen_Fred\Projet_Machine_Learning_Julien\GB_Cu_001_Generation\Best_Models_models"
 
 # Calls the training function, which in turn calls the validation function
 
-metrics  = train_model( model, train_loader, val_loader, 
-    criterion_classification, criterion_regression, optimizer, device, num_epochs, scheduler = None
+metrics, alpha_f, beta_f  = train_model( model, train_loader, val_loader, 
+                                        criterion_classification, criterion_regression, 
+                                        optimizer, device, num_epochs, alpha, beta, save_dir_model, scheduler = None
 )
+
+
+#print(alpha_f, beta_f)
 
 #Display lenght of outpout from training function 
 #for key in metrics:
  #   print(f"{key}: {len(metrics[key])}")
 
-    
+
 
 
 # ====================================================================================================================================================
@@ -186,7 +197,9 @@ save_dir_prediction_true = r"C:\Users\p09276\Post_doc_Yen_Fred\Projet_Machine_Le
 scaler_path = os.path.join(root, "scaler.pkl")
 
 # Calling up the test function
-test_metrics = test_model(model, test_loader, criterion_classification, criterion_regression, device, save_dir_prediction_true, scaler_path)
+test_metrics = test_model(model, test_loader, criterion_classification, criterion_regression, 
+                          device, save_dir_prediction_true, scaler_path, alpha_f, beta_f
+)
 
 
 
