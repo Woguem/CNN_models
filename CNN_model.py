@@ -312,7 +312,7 @@ class CNN(nn.Module):
         # Sortie classification (Batch, max_dislocations, 2)
         classification_logits = self.classification_head(x).view(-1, self.max_dislocations_in_batch, self.num_classes) #  Utilisé pour le loss  
         
-        #classification_probs = F.softmax(classification_logits, dim=-1)  # Convertir en probabilités (juste pour l'affichage), mais pas utilisé pour le loss car nn.CrossEntropyLoss utilise déjà le softmax (il faut utiliser celui avec logit)
+        #classification_probs = F.softmax(classification_logits, dim=-1)  # Converts to probabilities (just for display), but is not used for loss because nn.CrossEntropyLoss already uses softmax (you must use the one with logit).
 
         # Sortie régression (Batch, max_dislocations, 2)
         regression_output = self.regression_head(x).view(-1, self.max_dislocations_in_batch, self.num_coordinates) # output = torch.tensor([[x1_1, y1_1], [x2_1, y2_1], [x3_1, y3_1]])  # 1 image, 3 dislocations, 2 coordonnées (x, y) par dislocation

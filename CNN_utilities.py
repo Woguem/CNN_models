@@ -241,7 +241,7 @@ class CNN(nn.Module):
         #Adapt the size to max_dislocations_in_batch (Batch, max_dislocations, 2)
         classification_logits = classification_logits[:, :max_dislocations_in_batch * self.num_classes].view(-1, max_dislocations_in_batch, self.num_classes)
 
-        #classification_probs = F.softmax(classification_logits, dim=-1)  # Convertir en probabilités (juste pour l'affichage), mais pas utilisé pour le loss car nn.CrossEntropyLoss utilise déjà le softmax (il faut utiliser celui avec logit)
+        #classification_probs = F.softmax(classification_logits, dim=-1)  # Converts to probabilities (just for display), but is not used for loss because nn.CrossEntropyLoss already uses softmax (you must use the one with logit).
 
         # Regression output 
         regression_output = self.regression_head(x) 
