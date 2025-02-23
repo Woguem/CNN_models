@@ -150,7 +150,7 @@ def custom_collate(batch):
 # 3️ Definition of the CNN Model
 # ==============================
 class CNN(nn.Module):
-    def __init__(self, num_classes, num_coordinates, max_total_disl=100):
+    def __init__(self, num_classes, num_coordinates, max_total_disl=40):
         super(CNN, self).__init__()
         
         
