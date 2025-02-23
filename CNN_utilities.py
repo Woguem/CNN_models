@@ -1,6 +1,4 @@
 """
-Created on Mon Feb 10 14:22:24 2025
-
 @author: Dr Yen Fred WOGUEM 
 
 @description: This script trains a CNN model to predict dislocation coordinates and their probability of presence
