@@ -33,7 +33,7 @@ print(device)
 
 
 # ==============================
-# 1️ Hyperparamètres
+# 1️ Hyperparameters
 # ==============================
 batch_size = 32            # 16 32 64 Number of images per batch
 learning_rate = 1e-5       # Learning rate
