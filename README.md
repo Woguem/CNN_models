@@ -14,4 +14,4 @@ CNN key points:
 
 
 Results :
-           The model is fast and gives 100% accuracy for classification but gives low accuracy for regression.
+           The model is fast and gives 100% accuracy for classification and 92% accuracy for regression.
